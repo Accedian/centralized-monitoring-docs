@@ -1,10 +1,15 @@
 @startuml Metrics Export Flow - Detailed
 skinparam componentStyle rectangle
 skinparam linetype ortho
+skinparam sequenceMessageAlign center
 
 title Metrics Export from Mobility Collector to Central PCA
 
-package "Mobility Collector (Remote Site)" #E8F5E9 {
+' ========================================
+' MOBILITY COLLECTOR (Remote Agent)
+' ========================================
+
+package "Mobility Collector\n(Remote Site)" #E8F5E9 {
     
     rectangle "Application Services" {
         [celeryworker] as celery
@@ -16,10 +21,15 @@ package "Mobility Collector (Remote Site)" #E8F5E9 {
     
     rectangle "Current Monitoring Stack" #FFECB3 {
         [otel-transformer] as transformer
+        note bottom of transformer
+          Transforms internal
+          telemetry to OTLP format
+        end note
+        
         [otel-exporter] as exporter
         note bottom of exporter
           **Current Config:**
-          Endpoint: https://<pca>/otel/
+          Endpoint: https://pca2507.rmn.local/otel/
           Auth: Bearer token
           Pipelines: traces, metrics, logs
         end note
@@ -31,6 +41,7 @@ package "Mobility Collector (Remote Site)" #E8F5E9 {
           **New: Prometheus Server**
           - Scrape local metrics
           - remote_write to Thanos
+          - Service discovery
         end note
         
         [FluentD/Fluent Bit] as fluentd
@@ -38,35 +49,86 @@ package "Mobility Collector (Remote Site)" #E8F5E9 {
           **New: Log Shipper**
           - Collect container logs
           - Forward to FluentD Aggregator
+          - Buffer for resilience
         end note
     }
 }
 
-cloud "Network (TLS Encrypted)" as network
+' ========================================
+' NETWORK LAYER
+' ========================================
 
-package "Central PCA (AOD Deployer)" #E3F2FD {
+cloud "Network\n(TLS Encrypted)" as network {
+}
+
+' ========================================
+' CENTRAL PCA (AOD Deployer)
+' ========================================
+
+package "Central PCA\n(AOD Deployer)" #E3F2FD {
     
-    rectangle "nginx Reverse Proxy" as nginx
+    rectangle "nginx Reverse Proxy" as nginx {
+        portin "Port 443" as p443
+        portin "Port 2443" as p2443
+    }
     
     rectangle "Telemetry Receivers" {
-        [Bellhop OTEL Collector] as bellhop
+        [Bellhop\nOTEL Collector] as bellhop
+        note bottom of bellhop
+          Receives OTLP data via /otel/
+          Routes to appropriate backends
+        end note
+        
         [FluentD Aggregator] as fd_central
+        note bottom of fd_central
+          **Recommended**
+          Central log aggregation
+          Parse, enrich, route
+        end note
+        
         [Thanos Receiver] as thanos_recv
+        note bottom of thanos_recv
+          **Recommended**
+          Accepts remote_write
+          Multi-tenant metrics
+        end note
     }
     
     rectangle "Storage" #FFF3E0 {
         database "OpenSearch" as opensearch
-        database "Thanos Store" as thanos_store
-        database "Prometheus Local TSDB" as prom_central
+        database "Prometheus\nLocal TSDB" as prom_central
+        
+        rectangle "Object Storage Options" #FFFDE7 {
+            database "MinIO\n(S3 Compatible)" as minio
+            note bottom of minio
+              **Option A: MinIO**
+              - Lightweight, simple
+              - Already in AOD Deployer
+              - Good for small deployments
+            end note
+            
+            database "Apache Ozone\n(S3 Compatible)" as ozone
+            note bottom of ozone
+              **Option B: Apache Ozone**
+              - Hadoop ecosystem native
+              - Better for large scale
+              - Multi-protocol (S3/HDFS)
+            end note
+        }
     }
     
     rectangle "Query & Visualization" {
         [Thanos Query] as thanos_query
         [Grafana] as grafana
-        [OpenSearch Dashboards] as osd
+        [OpenSearch\nDashboards] as osd
     }
 }
 
+' ========================================
+' DATA FLOWS
+' ========================================
+
+' Current OTEL flow
 of --> transformer
 snmp --> transformer
 transformer --> exporter
@@ -74,24 +136,32 @@ exporter --> network
 network --> nginx
 nginx --> bellhop : /otel/*
 
+' Recommended Prometheus flow
 celery ..> prom : metrics endpoint
 coord ..> prom : metrics endpoint
 web ..> prom : metrics endpoint
 prom ..> network : remote_write
-network ..> thanos_recv : Prometheus remote_write
+network ..> thanos_recv : Prometheus\nremote_write
 
+' Recommended FluentD flow
 celery ..> fluentd : stdout/files
 coord ..> fluentd : stdout/files
 web ..> fluentd : stdout/files
 fluentd ..> network : TCP/TLS
 network ..> fd_central : Log stream
 
+' Central storage
 bellhop --> prom_central : Metrics
 bellhop --> opensearch : Logs/Traces
 fd_central --> opensearch : Logs
-thanos_recv --> thanos_store : Long-term storage
 
-thanos_store --> thanos_query
+' Thanos to Object Storage (choose one)
+thanos_recv --> minio : S3 API\n(Option A)
+thanos_recv ..> ozone : S3 API\n(Option B)
+
+' Query layer
+minio --> thanos_query
+ozone ..> thanos_query
 prom_central --> thanos_query
 thanos_query --> grafana
 opensearch --> osd
