@@ -1,0 +1,94 @@
+@startuml Centralized Monitoring Architecture
+skinparam componentStyle rectangle
+skinparam linetype ortho
+
+title Centralized Monitoring - Distributed PCA Architecture
+footer AOD Deployer (Replicated KOTS) + Mobility Collector
+
+!define REMOTE_COLOR #E8F5E9
+!define CENTRAL_COLOR #E3F2FD
+!define STORAGE_COLOR #FFF3E0
+
+package "Remote Site 1 - Mobility Collector" REMOTE_COLOR {
+    rectangle "Log Collection" {
+        [FluentD Agent] as fd1
+        [Application Logs] as logs1
+    }
+    rectangle "Metrics Collection" {
+        [Prometheus] as prom1
+        [OTEL Collector] as otel1
+    }
+    logs1 --> fd1
+    prom1 --> otel1 : Prometheus metrics
+}
+
+package "Remote Site N - Mobility Collector" REMOTE_COLOR {
+    rectangle "Log Collection" {
+        [FluentD Agent] as fdN
+        [Application Logs] as logsN
+    }
+    rectangle "Metrics Collection" {
+        [Prometheus] as promN
+        [OTEL Collector] as otelN
+    }
+    logsN --> fdN
+    promN --> otelN
+}
+
+package "Central PCA - AOD Deployer" CENTRAL_COLOR {
+    
+    rectangle "Ingress Layer" {
+        [nginx Reverse Proxy] as nginx
+        note right of nginx
+          Ports:
+          - 443: Tenant API
+          - 2443: Admin API
+          - 3443: Zitadel Auth
+        end note
+    }
+    
+    rectangle "Log Aggregation" {
+        [FluentD Aggregator] as fd_agg
+        [Bellhop OTEL Collector] as bellhop
+    }
+    
+    rectangle "Storage Layer" STORAGE_COLOR {
+        database "OpenSearch" as opensearch
+        database "Prometheus + Thanos" as thanos
+        database "Kafka" as kafka_central
+        database "Druid" as druid
+    }
+    
+    rectangle "Visualization" {
+        [Grafana] as grafana
+        [OpenSearch Dashboards] as osd
+    }
+    
+    rectangle "Alerting" {
+        [Alert Service] as alert_svc
+        [Ignite] as ignite
+    }
+}
+
+fd1 --> fd_agg : Forward logs (TCP/TLS)
+fdN --> fd_agg : Forward logs (TCP/TLS)
+fd_agg --> opensearch : Index logs
+
+otel1 --> nginx : OTLP/HTTP (Bearer Auth)
+otelN --> nginx : OTLP/HTTP (Bearer Auth)
+nginx --> bellhop : Route /otel/*
+bellhop --> thanos : Store metrics
+bellhop --> kafka_central : Stream events
+
+prom1 ..> thanos : remote_write (Alternative)
+promN ..> thanos : remote_write (Alternative)
+
+opensearch --> osd : Query logs
+thanos --> grafana : Query metrics
+opensearch --> grafana : Log panels
+druid --> grafana : Analytics data
+
+thanos --> ignite : Metric alerts
+opensearch --> alert_svc : Log-based alerts
+
+@enduml

@@ -1,0 +1,83 @@
+@startuml Mobility Collector Architecture
+skinparam componentStyle rectangle
+skinparam linetype ortho
+
+title Mobility Collector - Current Architecture
+
+!define FM_COLOR #E8F5E9
+!define PM_COLOR #E3F2FD
+!define INFRA_COLOR #FFF3E0
+
+package "Remote Site - Mobility Collector" {
+    
+    package "matrix-fm-analytics namespace" FM_COLOR {
+        rectangle "Fault Management (FM)" {
+            [snmptrapd] as trapd <<UDP 1162>>
+            [snmppipeline] as pipeline
+            [of-framework] as of
+            [of-alertmanager] as alertmgr
+            [of-consumer] as consumer
+            [alertservice] as alertsvc
+            [otel-transformer] as transformer
+            [otel-exporter] as exporter <<OTLP>>
+        }
+    }
+    
+    package "matrix-pm-analytics namespace" PM_COLOR {
+        rectangle "Performance Management (PM)" {
+            [matrixweb] as web <<Django>>
+            [coordinator] as coord
+            [celeryworker] as celery
+            [celerybeat] as beat
+            [flower] as flower
+            [fileservice] as filesvc
+        }
+        
+        rectangle "Infrastructure" INFRA_COLOR {
+            database "TimescaleDB" as tsdb
+            database "Redis Cluster" as redis
+            queue "RabbitMQ" as rabbit
+            queue "Kafka" as kafka
+            [Zookeeper] as zk
+        }
+    }
+    
+    package "Ingress Layer" {
+        [nginx-ingress] as nginx <<MetalLB IP>>
+        [MetalLB] as metallb
+    }
+}
+
+trapd --> pipeline : SNMP traps
+pipeline --> of : Processed traps
+of --> alertmgr : Alerts
+alertmgr --> consumer : Alert events
+consumer --> alertsvc : Notifications
+of --> transformer : Telemetry data
+transformer --> exporter : OTLP format
+
+web --> coord : API requests
+coord --> celery : Task dispatch
+beat --> rabbit : Scheduled tasks
+celery --> rabbit : Task queue
+celery --> redis : Cache
+celery --> tsdb : Metrics storage
+celery --> kafka : Event streaming
+kafka --> zk : Coordination
+
+nginx --> web : HTTP/HTTPS
+metallb --> nginx : LoadBalancer
+
+note right of exporter
+  **Current Monitoring Export**
+  OTEL Exporter sends:
+  - Traces
+  - Metrics  
+  - Logs
+  
+  To: https://<pca>/otel/
+  Protocol: OTLP/HTTP
+  Auth: Bearer token
+end note
+
+@enduml

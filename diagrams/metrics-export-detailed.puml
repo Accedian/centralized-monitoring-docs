@@ -1,0 +1,100 @@
+@startuml Metrics Export Flow - Detailed
+skinparam componentStyle rectangle
+skinparam linetype ortho
+
+title Metrics Export from Mobility Collector to Central PCA
+
+package "Mobility Collector (Remote Site)" #E8F5E9 {
+    
+    rectangle "Application Services" {
+        [celeryworker] as celery
+        [coordinator] as coord
+        [matrixweb] as web
+        [of-framework] as of
+        [snmppipeline] as snmp
+    }
+    
+    rectangle "Current Monitoring Stack" #FFECB3 {
+        [otel-transformer] as transformer
+        [otel-exporter] as exporter
+        note bottom of exporter
+          **Current Config:**
+          Endpoint: https://<pca>/otel/
+          Auth: Bearer token
+          Pipelines: traces, metrics, logs
+        end note
+    }
+    
+    rectangle "Recommended Additions" #C8E6C9 {
+        [Prometheus] as prom
+        note bottom of prom
+          **New: Prometheus Server**
+          - Scrape local metrics
+          - remote_write to Thanos
+        end note
+        
+        [FluentD/Fluent Bit] as fluentd
+        note bottom of fluentd
+          **New: Log Shipper**
+          - Collect container logs
+          - Forward to FluentD Aggregator
+        end note
+    }
+}
+
+cloud "Network (TLS Encrypted)" as network
+
+package "Central PCA (AOD Deployer)" #E3F2FD {
+    
+    rectangle "nginx Reverse Proxy" as nginx
+    
+    rectangle "Telemetry Receivers" {
+        [Bellhop OTEL Collector] as bellhop
+        [FluentD Aggregator] as fd_central
+        [Thanos Receiver] as thanos_recv
+    }
+    
+    rectangle "Storage" #FFF3E0 {
+        database "OpenSearch" as opensearch
+        database "Thanos Store" as thanos_store
+        database "Prometheus Local TSDB" as prom_central
+    }
+    
+    rectangle "Query & Visualization" {
+        [Thanos Query] as thanos_query
+        [Grafana] as grafana
+        [OpenSearch Dashboards] as osd
+    }
+}
+
+of --> transformer
+snmp --> transformer
+transformer --> exporter
+exporter --> network
+network --> nginx
+nginx --> bellhop : /otel/*
+
+celery ..> prom : metrics endpoint
+coord ..> prom : metrics endpoint
+web ..> prom : metrics endpoint
+prom ..> network : remote_write
+network ..> thanos_recv : Prometheus remote_write
+
+celery ..> fluentd : stdout/files
+coord ..> fluentd : stdout/files
+web ..> fluentd : stdout/files
+fluentd ..> network : TCP/TLS
+network ..> fd_central : Log stream
+
+bellhop --> prom_central : Metrics
+bellhop --> opensearch : Logs/Traces
+fd_central --> opensearch : Logs
+thanos_recv --> thanos_store : Long-term storage
+
+thanos_store --> thanos_query
+prom_central --> thanos_query
+thanos_query --> grafana
+opensearch --> osd
+opensearch --> grafana : Log queries
+
+@enduml
