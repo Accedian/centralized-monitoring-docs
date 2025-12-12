@@ -5,9 +5,14 @@ skinparam linetype ortho
 title Centralized Monitoring - Distributed PCA Architecture
 footer AOD Deployer (Replicated KOTS) + Mobility Collector
 
+' Colors
 !define REMOTE_COLOR #E8F5E9
 !define CENTRAL_COLOR #E3F2FD
 !define STORAGE_COLOR #FFF3E0
+
+' ========================================
+' REMOTE SITES (Mobility Collectors)
+' ========================================
 
 package "Remote Site 1 - Mobility Collector" REMOTE_COLOR {
     rectangle "Log Collection" {
@@ -22,6 +27,19 @@ package "Remote Site 1 - Mobility Collector" REMOTE_COLOR {
     prom1 --> otel1 : Prometheus metrics
 }
 
+package "Remote Site 2 - Mobility Collector" REMOTE_COLOR {
+    rectangle "Log Collection" {
+        [FluentD Agent] as fd2
+        [Application Logs] as logs2
+    }
+    rectangle "Metrics Collection" {
+        [Prometheus] as prom2
+        [OTEL Collector] as otel2
+    }
+    logs2 --> fd2
+    prom2 --> otel2
+}
+
 package "Remote Site N - Mobility Collector" REMOTE_COLOR {
     rectangle "Log Collection" {
         [FluentD Agent] as fdN
@@ -34,6 +52,10 @@ package "Remote Site N - Mobility Collector" REMOTE_COLOR {
     logsN --> fdN
     promN --> otelN
 }
+
+' ========================================
+' CENTRAL PCA (AOD Deployer)
+' ========================================
 
 package "Central PCA - AOD Deployer" CENTRAL_COLOR {
     
@@ -53,10 +75,21 @@ package "Central PCA - AOD Deployer" CENTRAL_COLOR {
     }
     
     rectangle "Storage Layer" STORAGE_COLOR {
-        database "OpenSearch" as opensearch
-        database "Prometheus + Thanos" as thanos
+        database "OpenSearch\n(Elasticsearch)" as opensearch {
+        }
+        database "Prometheus" as prom_local
         database "Kafka" as kafka_central
         database "Druid" as druid
+        
+        rectangle "Thanos + Object Storage" #FFFDE7 {
+            [Thanos\nReceive/Query/Store] as thanos
+            database "MinIO" as minio
+            database "Apache Ozone" as ozone
+            note bottom of ozone
+              Alternative: S3-compatible
+              storage for large scale
+            end note
+        }
     }
     
     rectangle "Visualization" {
@@ -70,24 +103,41 @@ package "Central PCA - AOD Deployer" CENTRAL_COLOR {
     }
 }
 
-fd1 --> fd_agg : Forward logs (TCP/TLS)
-fdN --> fd_agg : Forward logs (TCP/TLS)
+' ========================================
+' DATA FLOWS
+' ========================================
+
+' Logs flow
+fd1 --> fd_agg : Forward logs\n(TCP/TLS)
+fd2 --> fd_agg : Forward logs\n(TCP/TLS)
+fdN --> fd_agg : Forward logs\n(TCP/TLS)
 fd_agg --> opensearch : Index logs
 
-otel1 --> nginx : OTLP/HTTP (Bearer Auth)
-otelN --> nginx : OTLP/HTTP (Bearer Auth)
+' Metrics flow (OTEL)
+otel1 --> nginx : OTLP/HTTP\n(Bearer Auth)
+otel2 --> nginx : OTLP/HTTP\n(Bearer Auth)
+otelN --> nginx : OTLP/HTTP\n(Bearer Auth)
 nginx --> bellhop : Route /otel/*
-bellhop --> thanos : Store metrics
+bellhop --> prom_local : Store metrics
+prom_local --> thanos : Federation
 bellhop --> kafka_central : Stream events
 
-prom1 ..> thanos : remote_write (Alternative)
-promN ..> thanos : remote_write (Alternative)
+' Alternative: Prometheus remote_write to Thanos
+prom1 ..> thanos : remote_write\n(Alternative)
+prom2 ..> thanos : remote_write\n(Alternative)
+promN ..> thanos : remote_write\n(Alternative)
 
+' Thanos to Object Storage
+thanos --> minio : S3 API\n(Default)
+thanos ..> ozone : S3 API\n(Alternative)
+
+' Storage to visualization
 opensearch --> osd : Query logs
 thanos --> grafana : Query metrics
 opensearch --> grafana : Log panels
 druid --> grafana : Analytics data
 
+' Alerting
 thanos --> ignite : Metric alerts
 opensearch --> alert_svc : Log-based alerts
 
